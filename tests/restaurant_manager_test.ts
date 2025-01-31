@@ -66,19 +66,30 @@ Clarinet.test({
 });
 
 Clarinet.test({
-  name: "Ensure can place and retrieve order",
+  name: "Ensure can place order with points redemption",
   async fn(chain: Chain, accounts: Map<string, Account>) {
+    const deployer = accounts.get('deployer')!;
     const customer = accounts.get('wallet_1')!;
     
-    let block = chain.mineBlock([
+    // First add points
+    let block1 = chain.mineBlock([
+      Tx.contractCall('restaurant_manager', 'add-loyalty-points', [
+        types.principal(customer.address),
+        types.uint(100)
+      ], deployer.address)
+    ]);
+    
+    // Then place order using points
+    let block2 = chain.mineBlock([
       Tx.contractCall('restaurant_manager', 'place-order', [
         types.uint(1), // order id
         types.list([types.uint(1), types.uint(2)]), // items
         types.uint(50), // total amount
+        types.uint(500), // points to use
       ], customer.address)
     ]);
     
-    block.receipts[0].result.expectOk();
+    block2.receipts[0].result.expectOk();
     
     // Verify order details
     let getOrder = chain.callReadOnlyFn(
@@ -91,6 +102,39 @@ Clarinet.test({
     const order = getOrder.result.expectSome();
     assertEquals(order['customer'], customer.address);
     assertEquals(order['total-amount'], types.uint(50));
-    assertEquals(order['status'], "pending");
+    assertEquals(order['points-used'], types.uint(500));
+    assertEquals(order['final-amount'], types.uint(45)); // 50 - (500/100)
+  }
+});
+
+Clarinet.test({
+  name: "Ensure menu items can be added and retrieved",
+  async fn(chain: Chain, accounts: Map<string, Account>) {
+    const deployer = accounts.get('deployer')!;
+    
+    let block = chain.mineBlock([
+      Tx.contractCall('restaurant_manager', 'add-menu-item', [
+        types.uint(1), // item id
+        types.ascii("Burger"), // name
+        types.uint(15), // price
+        types.ascii("Main Course"), // category
+      ], deployer.address)
+    ]);
+    
+    block.receipts[0].result.expectOk();
+    
+    // Verify menu item
+    let getMenuItem = chain.callReadOnlyFn(
+      'restaurant_manager',
+      'get-menu-item',
+      [types.uint(1)],
+      deployer.address
+    );
+    
+    const menuItem = getMenuItem.result.expectSome();
+    assertEquals(menuItem['name'], "Burger");
+    assertEquals(menuItem['price'], types.uint(15));
+    assertEquals(menuItem['category'], "Main Course");
+    assertEquals(menuItem['available'], true);
   }
 });
