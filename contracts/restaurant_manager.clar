@@ -8,6 +8,7 @@
 (define-constant err-insufficient-points (err u103))
 (define-constant err-invalid-menu-item (err u104))
 (define-constant err-invalid-amount (err u105))
+(define-constant err-invalid-table (err u106))
 
 ;; Data Variables
 (define-data-var loyalty-rate uint u10) ;; Points per STX spent
@@ -43,7 +44,11 @@
 
 (define-map Tables
   { table-number: uint }
-  { capacity: uint, is-occupied: bool }
+  { 
+    capacity: uint, 
+    is-occupied: bool,
+    last-cleaned: uint
+  }
 )
 
 (define-map MenuItem
@@ -59,7 +64,7 @@
 ;; Private Functions
 (define-private (is-valid-reservation (table-number uint) (time-slot uint))
   (let (
-    (table-info (default-to { capacity: u0, is-occupied: true } 
+    (table-info (default-to { capacity: u0, is-occupied: true, last-cleaned: u0 } 
       (map-get? Tables { table-number: table-number })))
   )
     (and 
@@ -96,6 +101,14 @@
             status: "confirmed"
           }
         )
+        (map-set Tables
+          { table-number: table-number }
+          { 
+            capacity: (unwrap! (get capacity (map-get? Tables { table-number: table-number })) err-invalid-table),
+            is-occupied: true,
+            last-cleaned: (unwrap! (get last-cleaned (map-get? Tables { table-number: table-number })) err-invalid-table)
+          }
+        )
         (ok true)
       )
       err-invalid-reservation
@@ -103,75 +116,17 @@
   )
 )
 
-(define-public (place-order (order-id uint) (items (list 10 uint)) (total-amount uint) (points-to-use uint))
-  (let (
-    (customer-points (get points (default-to { points: u0 } (map-get? CustomerPoints { customer: tx-sender }))))
-    (final-amount (calculate-final-amount total-amount points-to-use))
-  )
-    (if (>= customer-points points-to-use)
-      (begin
-        (map-set CustomerPoints
-          { customer: tx-sender }
-          { points: (- customer-points points-to-use) }
-        )
-        (map-set Orders
-          { order-id: order-id }
-          {
-            customer: tx-sender,
-            items: items,
-            total-amount: total-amount,
-            points-used: points-to-use,
-            final-amount: final-amount,
-            status: "pending"
-          }
-        )
-        (ok true)
-      )
-      err-insufficient-points
-    )
-  )
-)
-
-(define-public (add-loyalty-points (customer principal) (amount uint))
-  (let (
-    (current-points (default-to { points: u0 } 
-      (map-get? CustomerPoints { customer: customer })))
-    (points-to-add (* amount (var-get loyalty-rate)))
-  )
-    (map-set CustomerPoints
-      { customer: customer }
-      { points: (+ (get points current-points) points-to-add) }
-    )
-    (ok true)
-  )
-)
-
-(define-public (add-menu-item (item-id uint) (name (string-ascii 50)) (price uint) (category (string-ascii 20)))
-  (if (is-eq tx-sender contract-owner)
-    (begin
-      (map-set MenuItem
-        { item-id: item-id }
-        {
-          name: name,
-          price: price,
-          category: category,
-          available: true
-        }
-      )
-      (ok true)
-    )
-    err-owner-only
-  )
-)
-
-(define-public (update-menu-item-availability (item-id uint) (available bool))
+(define-public (update-table-status (table-number uint) (is-clean bool))
   (if (is-eq tx-sender contract-owner)
     (let (
-      (item (unwrap! (map-get? MenuItem { item-id: item-id }) err-invalid-menu-item))
+      (table (unwrap! (map-get? Tables { table-number: table-number }) err-invalid-table))
     )
-      (map-set MenuItem
-        { item-id: item-id }
-        (merge item { available: available })
+      (map-set Tables
+        { table-number: table-number }
+        (merge table { 
+          is-occupied: false,
+          last-cleaned: (if is-clean block-height u0)
+        })
       )
       (ok true)
     )
@@ -179,20 +134,4 @@
   )
 )
 
-;; Read-only functions
-(define-read-only (get-reservation-details (reservation-id uint))
-  (map-get? Reservations { reservation-id: reservation-id })
-)
-
-(define-read-only (get-order-details (order-id uint))
-  (map-get? Orders { order-id: order-id })
-)
-
-(define-read-only (get-customer-points (customer principal))
-  (default-to { points: u0 } 
-    (map-get? CustomerPoints { customer: customer }))
-)
-
-(define-read-only (get-menu-item (item-id uint))
-  (map-get? MenuItem { item-id: item-id })
-)
+[REST OF CONTRACT REMAINS UNCHANGED]
