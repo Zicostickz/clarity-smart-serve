@@ -14,7 +14,7 @@ Clarinet.test({
     
     block.receipts[0].result.expectOk();
     
-    // Test reservation with duration
+    // Test reservation with duration and guest count
     block = chain.mineBlock([
       Tx.contractCall('restaurant_manager', 'make-reservation', [
         types.uint(1), // reservation id
@@ -26,5 +26,18 @@ Clarinet.test({
     ]);
     
     block.receipts[0].result.expectOk();
+
+    // Test reservation overlap
+    block = chain.mineBlock([
+      Tx.contractCall('restaurant_manager', 'make-reservation', [
+        types.uint(2), // reservation id
+        types.uint(1), // table number
+        types.uint(101), // overlapping time slot
+        types.uint(2), // duration
+        types.uint(4) // guests
+      ], customer.address)
+    ]);
+    
+    block.receipts[0].result.expectErr();
   }
 });
