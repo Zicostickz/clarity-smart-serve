@@ -12,12 +12,16 @@
 (define-constant err-reservation-expired (err u107))
 (define-constant err-invalid-time (err u108))
 (define-constant err-maintenance-required (err u109))
+(define-constant err-invalid-guest-count (err u110))
+(define-constant err-reservation-overlap (err u111))
 
 ;; Data Variables
 (define-data-var loyalty-rate uint u10)
 (define-data-var points-redemption-rate uint u100)
-(define-data-var maintenance-interval uint u48) ;; Hours between required cleaning
+(define-data-var maintenance-interval uint u48)
+(define-data-var max-reservation-duration uint u4) ;; Maximum hours per reservation
 
+;; Maps
 (define-map Reservations
   { reservation-id: uint }
   {
@@ -37,27 +41,24 @@
     is-occupied: bool,
     last-cleaned: uint,
     maintenance-history: (list 10 uint),
-    reservation-end-time: uint
+    reservation-end-time: uint,
+    next-maintenance-due: uint
   }
 )
 
 ;; Private Functions
-(define-private (is-valid-reservation (table-number uint) (time-slot uint))
+(define-private (is-valid-reservation (table-number uint) (time-slot uint) (guests uint) (duration uint))
   (let (
-    (table-info (default-to { 
-      capacity: u0, 
-      is-occupied: true, 
-      last-cleaned: u0,
-      maintenance-history: (list),
-      reservation-end-time: u0 
-    } (map-get? Tables { table-number: table-number })))
+    (table-info (unwrap! (map-get? Tables { table-number: table-number }) err-invalid-table))
     (current-time block-height)
   )
     (and 
       (not (get is-occupied table-info))
-      (> (get capacity table-info) u0)
+      (>= (get capacity table-info) guests)
       (>= (- (get last-cleaned table-info) current-time) (var-get maintenance-interval))
       (> time-slot current-time)
+      (<= duration (var-get max-reservation-duration))
+      (>= (get next-maintenance-due table-info) (+ time-slot duration))
     )
   )
 )
@@ -71,59 +72,77 @@
   )
 )
 
-;; Public Functions
-(define-public (make-reservation (reservation-id uint) (table-number uint) (time-slot uint) (duration uint) (guests uint))
+(define-private (check-reservation-overlap (table-number uint) (start-time uint) (end-time uint))
   (let (
-    (is-valid (is-valid-reservation table-number time-slot))
-    (end-time (+ time-slot duration))
+    (table-info (unwrap! (map-get? Tables { table-number: table-number }) err-invalid-table))
+    (current-end-time (get reservation-end-time table-info))
   )
-    (if is-valid
-      (begin
-        (map-set Reservations
-          { reservation-id: reservation-id }
-          {
-            customer: tx-sender,
-            table-number: table-number,
-            time-slot: time-slot,
-            end-time: end-time,
-            guests: guests,
-            status: "confirmed"
-          }
-        )
-        (map-set Tables
-          { table-number: table-number }
-          { 
-            capacity: (unwrap! (get capacity (map-get? Tables { table-number: table-number })) err-invalid-table),
-            is-occupied: true,
-            last-cleaned: (unwrap! (get last-cleaned (map-get? Tables { table-number: table-number })) err-invalid-table),
-            maintenance-history: (unwrap! (get maintenance-history (map-get? Tables { table-number: table-number })) err-invalid-table),
-            reservation-end-time: end-time
-          }
-        )
-        (ok true)
-      )
-      err-invalid-reservation
+    (or 
+      (>= start-time current-end-time)
+      (<= end-time (get reservation-end-time table-info))
     )
   )
 )
 
+;; Public Functions
+(define-public (make-reservation (reservation-id uint) (table-number uint) (time-slot uint) (duration uint) (guests uint))
+  (let (
+    (is-valid (is-valid-reservation table-number time-slot guests duration))
+    (end-time (+ time-slot duration))
+    (no-overlap (check-reservation-overlap table-number time-slot end-time))
+  )
+    (asserts! is-valid err-invalid-reservation)
+    (asserts! no-overlap err-reservation-overlap)
+    (ok (begin
+      (map-set Reservations
+        { reservation-id: reservation-id }
+        {
+          customer: tx-sender,
+          table-number: table-number,
+          time-slot: time-slot,
+          end-time: end-time,
+          guests: guests,
+          status: "confirmed"
+        }
+      )
+      (map-set Tables
+        { table-number: table-number }
+        (merge (unwrap! (map-get? Tables { table-number: table-number }) err-invalid-table)
+          { 
+            is-occupied: true,
+            reservation-end-time: end-time
+          }
+        )
+      )
+    ))
+  )
+)
+
 (define-public (update-table-status (table-number uint) (is-clean bool))
-  (if (is-eq tx-sender contract-owner)
-    (let (
-      (table (unwrap! (map-get? Tables { table-number: table-number }) err-invalid-table))
-      (current-time block-height)
-      (maintenance-record (unwrap! (update-maintenance-history table-number current-time) err-invalid-table))
-    )
+  (let (
+    (current-time block-height)
+    (table (unwrap! (map-get? Tables { table-number: table-number }) err-invalid-table))
+  )
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (ok (begin
       (map-set Tables
         { table-number: table-number }
         (merge table { 
           is-occupied: false,
           last-cleaned: (if is-clean current-time u0),
-          maintenance-history: maintenance-record
+          maintenance-history: (unwrap! (update-maintenance-history table-number current-time) err-invalid-table),
+          next-maintenance-due: (+ current-time (var-get maintenance-interval))
         })
       )
-      (ok true)
-    )
-    err-owner-only
+    ))
   )
+)
+
+;; Read-only Functions
+(define-read-only (get-table-status (table-number uint))
+  (map-get? Tables { table-number: table-number })
+)
+
+(define-read-only (get-reservation (reservation-id uint))
+  (map-get? Reservations { reservation-id: reservation-id })
 )
